@@ -535,4 +535,70 @@ end";
 			await transaction.RollbackAsync();
 		}
 	}
+
+	[Test]
+	public async Task HasRowsIsFalseForAnEmptyResultTest()
+	{
+		// DbDataReader.HasRows: "true if the DbDataReader contains one or more rows; otherwise false."
+		await using (var command = new FbCommand("select INT_FIELD from TEST where 1 = 0", Connection))
+		{
+			await using (var reader = await command.ExecuteReaderAsync())
+			{
+				Assert.IsFalse(reader.HasRows);
+				Assert.IsFalse(await reader.ReadAsync());
+			}
+		}
+	}
+
+	[Test]
+	public async Task HasRowsDoesNotSkipTheFirstRowTest()
+	{
+		await using (var command = new FbCommand("select INT_FIELD from TEST where INT_FIELD in (1, 2) order by INT_FIELD", Connection))
+		{
+			await using (var reader = await command.ExecuteReaderAsync())
+			{
+				Assert.IsTrue(reader.HasRows);
+				Assert.IsTrue(reader.HasRows);
+				Assert.IsTrue(await reader.ReadAsync());
+				Assert.AreEqual(1, reader.GetInt32(0));
+				Assert.IsTrue(reader.Read());
+				Assert.AreEqual(2, reader.GetInt32(0));
+				Assert.IsFalse(reader.Read());
+				Assert.IsTrue(reader.HasRows, "HasRows describes the result, not the current position");
+			}
+		}
+	}
+
+	[Test]
+	public async Task RecordsAffectedIsMinusOneForSelectTest()
+	{
+		// DbDataReader.RecordsAffected: "-1 for SELECT statements; 0 if no rows were affected or the statement failed."
+		await using (var command = new FbCommand("select INT_FIELD from TEST where 1 = 0", Connection))
+		{
+			var reader = await command.ExecuteReaderAsync();
+			while (await reader.ReadAsync())
+			{ }
+			await reader.CloseAsync();
+			Assert.AreEqual(-1, reader.RecordsAffected);
+		}
+	}
+
+	[Test]
+	public async Task GetFieldTypeMatchesGetValueForOctetsTest()
+	{
+		// IDataRecord.GetFieldType: "the type of Object that would be returned from GetValue."
+		await using (var command = new FbCommand("select cast('ab' as varchar(10) character set octets), cast('ab' as char(4) character set octets) from rdb$database", Connection))
+		{
+			await using (var reader = await command.ExecuteReaderAsync())
+			{
+				Assert.IsTrue(await reader.ReadAsync());
+				for (var i = 0; i < reader.FieldCount; i++)
+				{
+					Assert.AreEqual(typeof(byte[]), reader.GetValue(i).GetType());
+					Assert.AreEqual(typeof(byte[]), reader.GetFieldType(i));
+				}
+			}
+		}
+	}
 }
+

@@ -51,7 +51,10 @@ public sealed class FbDataReader : DbDataReader
 	private bool _eof;
 	private bool _isClosed;
 	private int _position;
-	private int _recordsAffected;
+	private int _recordsAffected = -1;
+	private DbValue[] _peekedRow;
+	private bool _hasPeekedRow;
+	private bool _hasRows;
 	private Dictionary<string, int> _columnsIndexesOrdinal;
 	private Dictionary<string, int> _columnsIndexesOrdinalCI;
 
@@ -102,9 +105,25 @@ public sealed class FbDataReader : DbDataReader
 		}
 	}
 
+	/// <summary>
+	/// DbDataReader.HasRows: "true if the DbDataReader contains one or more rows; otherwise false." Before the first
+	/// Read this fetches one row ahead; Read then returns that row.
+	/// </summary>
 	public override bool HasRows
 	{
-		get { return _command.HasFields; }
+		get
+		{
+			if (!_hasRows && !_isClosed && !_hasPeekedRow && _position == StartPosition && _command != null && _command.HasFields && !IsCommandBehavior(CommandBehavior.SchemaOnly))
+			{
+				using (var explicitCancellation = ExplicitCancellation.Enter(CancellationToken.None, _command.Cancel))
+				{
+					_peekedRow = _command.Fetch();
+				}
+				_hasPeekedRow = true;
+				_hasRows = _peekedRow != null;
+			}
+			return _hasRows;
+		}
 	}
 
 	public override bool IsClosed
@@ -166,6 +185,8 @@ public sealed class FbDataReader : DbDataReader
 			_command = null;
 			_connection = null;
 			_row = null;
+			_peekedRow = null;
+			_hasPeekedRow = false;
 			_schemaTable = null;
 			_fields = null;
 		}
@@ -195,6 +216,8 @@ public sealed class FbDataReader : DbDataReader
 			_command = null;
 			_connection = null;
 			_row = null;
+			_peekedRow = null;
+			_hasPeekedRow = false;
 			_schemaTable = null;
 			_fields = null;
 		}
@@ -229,10 +252,11 @@ public sealed class FbDataReader : DbDataReader
 		{
 			using (var explicitCancellation = ExplicitCancellation.Enter(CancellationToken.None, _command.Cancel))
 			{
-				_row = _command.Fetch();
+				_row = TakePeekedRow(out var peeked) ? peeked : _command.Fetch();
 				if (_row != null)
 				{
 					_position++;
+					_hasRows = true;
 					return true;
 				}
 				else
@@ -259,10 +283,11 @@ public sealed class FbDataReader : DbDataReader
 		{
 			using (var explicitCancellation = ExplicitCancellation.Enter(cancellationToken, _command.Cancel))
 			{
-				_row = await _command.FetchAsync(explicitCancellation.CancellationToken).ConfigureAwait(false);
+				_row = TakePeekedRow(out var peeked) ? peeked : await _command.FetchAsync(explicitCancellation.CancellationToken).ConfigureAwait(false);
 				if (_row != null)
 				{
 					_position++;
+					_hasRows = true;
 					return true;
 				}
 				else
@@ -1012,14 +1037,24 @@ public sealed class FbDataReader : DbDataReader
 		return (FbDbType)_fields[i].DbDataType;
 	}
 
+	private bool TakePeekedRow(out DbValue[] row)
+	{
+		row = _peekedRow;
+		var hadPeekedRow = _hasPeekedRow;
+		_peekedRow = null;
+		_hasPeekedRow = false;
+		return hadPeekedRow;
+	}
+
 	private void UpdateRecordsAffected()
 	{
 		if (_command != null && !_command.IsDisposed)
 		{
-			if (_command.RecordsAffected != -1)
+			var recordsAffected = _command.StatementRecordsAffected;
+			if (recordsAffected != -1)
 			{
 				_recordsAffected = _recordsAffected == -1 ? 0 : _recordsAffected;
-				_recordsAffected += _command.RecordsAffected;
+				_recordsAffected += recordsAffected;
 			}
 		}
 	}
